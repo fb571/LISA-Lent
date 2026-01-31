@@ -1,0 +1,322 @@
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.special import jv  # Bessel function of the first kind
+from scipy.signal import get_window
+import jax
+import jax.numpy as jnp
+jax.config.update("jax_enable_x64", True)
+
+N = int(4*365*24*60*60/10)
+dt = 10
+t = jnp.arange(N) * dt
+t_jax = jnp.asarray(t)
+
+G = 6.67e-11
+c = 3e8
+
+theta = np.pi/3
+phi = np.pi/4
+psi = 0
+
+nmax = 2
+n_vals = np.arange(1, nmax + 1)
+n_vals_jax = jnp.asarray(n_vals)
+
+e_min, e_max, de = 0, 1, 0.001
+e_grid = np.arange(e_min, e_max + de/2, de)
+Ne = len(e_grid)
+e_grid_jax = jnp.asarray(e_grid)
+
+J_table_3d = np.empty((Ne, nmax, 4), dtype=np.float64)
+
+for ie, e in enumerate(e_grid):
+    for j, nj in enumerate(n_vals):
+        x = nj * e
+        J_table_3d[ie, j, 0] = jv(nj - 2, x)
+        J_table_3d[ie, j, 1] = jv(nj - 1, x)
+        J_table_3d[ie, j, 2] = jv(nj + 1, x)
+        J_table_3d[ie, j, 3] = jv(nj + 2, x)
+
+# --- convert ONCE to JAX ---
+J_table_3d_jax = jnp.asarray(J_table_3d)
+
+@jax.jit
+def get_J_slice_interp_jax(e):
+    x = (e - e_min) / de
+    i0 = jnp.floor(x).astype(jnp.int32)
+
+    i0 = jnp.clip(i0, 0, J_table_3d_jax.shape[0] - 2)
+    w = x - i0
+
+    return (1.0 - w) * J_table_3d_jax[i0] + w * J_table_3d_jax[i0 + 1]
+
+@jax.jit
+def get_J_slice_interp_jax(e):
+    x = (e - e_min) / de
+    i0 = jnp.floor(x).astype(jnp.int32)
+
+    i0 = jnp.clip(i0, 0, J_table_3d_jax.shape[0] - 2)
+    w = x - i0
+
+    return (1.0 - w) * J_table_3d_jax[i0] + w * J_table_3d_jax[i0 + 1]
+
+@jax.jit
+def gw_time_domain_jax(t, A, f0, e, J_slice, CI, phi, n_vals):
+    omega = 2.0 * jnp.pi * f0
+    pref = -A
+
+    Cphi = jnp.cos(phi)
+    Sphi = jnp.sin(phi)
+    C2phi = jnp.cos(2.0*phi)
+    S2phi = jnp.sin(2.0*phi)
+
+    Jm2 = J_slice[:, 0]
+    Jm1 = J_slice[:, 1]
+    Jp1 = J_slice[:, 2]
+    Jp2 = J_slice[:, 3]
+    
+    nAn = n_vals * (Jm2 - Jp2 - 2.0 * e * (Jm1 - Jp1))
+    nBn = n_vals * (1.0 - e * e) * (Jp2 - Jm2)
+    nCn = n_vals * jnp.sqrt(1.0 - e * e) * (Jp2 + Jm2 - e * (Jp1 + Jm1))
+
+    phase = omega * t[:, None] * n_vals[None, :]
+
+    A_term = (Cphi**2 - Sphi**2 * CI**2)
+    B_term = (Sphi**2 - Cphi**2 * CI**2)
+    C_term = S2phi * (1.0 + CI**2)
+
+    hp = (
+        (nAn[None, :] * A_term + nBn[None, :] * B_term) * jnp.cos(phase)
+        - nCn[None, :] * C_term * jnp.sin(phase)
+    )
+
+    hc = (
+    2.0 * jnp.sin(phase) * C2phi * CI * nCn
+    + (nAn - nBn) * jnp.cos(phase) * S2phi * CI
+)
+    hplus = pref * jnp.sum(hp, axis=1)
+    hcross = pref * jnp.sum(hc, axis=1)
+    return jnp.stack([hplus, hcross], axis=1)
+
+#V803CEN
+true_f01 = (1.253e-3)/2
+ω1 = 2 * true_f01 * np.pi
+true_e1 = 0
+m11 = 1 * 2e30
+m21 = 0.08 * 2e30
+r1 = 3.0857e16 * 287
+true_CI1 = np.cos(13.5 * np.pi / 180)
+
+a01 = (G * (m11 + m21) / ω1**2) ** (1/3)
+mu1 = (m11 * m21) / (m11 + m21)
+prefactor1 = ω1**2 * a01**2 * (mu1 * G) / (r1 * c**4)
+
+true_A1 = prefactor1
+true_phi1 = 0
+
+J_slice1 = get_J_slice_interp_jax(true_e1)
+
+h_true1 = gw_time_domain_jax(
+    t_jax,
+    true_A1,
+    true_f01,
+    true_e1,
+    J_slice1,
+    true_CI1,
+    true_phi1,
+    n_vals_jax
+)
+
+hcr1 = jnp.array(h_true1[:, 1])
+hpl1 = jnp.array(h_true1[:, 0])
+
+#HMCANCRI
+true_f02 = (6.220e-3)/2
+ω2 = 2 * true_f02 * np.pi
+true_e2 = 0
+m12 = 0.55 * 2e30
+m22 = 0.27 * 2e30
+r2 = 3.0857e16 * 7500
+true_CI2 = np.cos(38 * np.pi / 180)
+
+a02 = (G * (m12 + m22) / ω2**2) ** (1/3)
+mu2 = (m12 * m22) / (m12 + m22)
+prefactor2 = ω2**2 * a02**2 * (mu2 * G) / (r2 * c**4)
+true_A2 = prefactor2
+true_phi2 = 0
+
+J_slice2 = get_J_slice_interp_jax(true_e2)
+
+h_true2 = gw_time_domain_jax(
+    t_jax,
+    true_A2,
+    true_f02,
+    true_e2,
+    J_slice2,
+    true_CI2,
+    true_phi2,
+    n_vals_jax
+)
+
+hcr2 = jnp.array(h_true2[:, 1])
+hpl2 = jnp.array(h_true2[:, 0])
+
+#ZTFJ1539
+f03 = (4.822e-3)/2
+ω3 = 2 * f03 * np.pi
+true_e3 = 0
+true_m13 = 0.8 * 2e30
+true_m23 = 0.1 * 2e30
+r3 = 3.0857e16 * 700
+true_CI3 = np.cos(70 * np.pi / 180)
+
+a03 = (G * (true_m13 + true_m23) / ω3**2) ** (1/3)
+mu3 = (true_m13 * true_m23) / (true_m13 + true_m23)
+prefactor3 = ω3**2 * a03**2 * (mu3 * G) / (r3 * c**4)
+true_A3 = prefactor3
+
+J_slice3 = get_J_slice_interp_jax(true_e3)
+true_phi3 = 0
+
+h_true3 = gw_time_domain_jax(
+    t_jax,
+    true_A3,
+    f03,
+    true_e3,
+    J_slice3,
+    true_CI3,
+    true_phi3,
+    n_vals_jax
+)
+
+hcr3 = jnp.array(h_true3[:, 1])
+hpl3 = jnp.array(h_true3[:, 0])
+
+#AMCVn
+
+f04 = (1.944e-3)/2
+ω4 = 2 * f04 * np.pi
+true_e4 = 0
+m14 = 0.68 * 2e30
+m24 = 0.125 * 2e30
+r4 = 3.0857e16 * 302
+true_CI4 = np.cos(43 * np.pi / 180)
+
+a04 = (G * (m14 + m24) / ω4**2) ** (1/3)
+mu4 = (m14 * m24) / (m14 + m24)
+prefactor4 = ω4**2 * a04**2 * (mu4 * G) / (r4 * c**4)
+
+true_A4 = prefactor4
+true_phi4 = 0
+
+J_slice4 = get_J_slice_interp_jax(true_e4)
+
+h_true4 = gw_time_domain_jax(
+    t_jax,
+    true_A4,
+    f04,
+    true_e4,
+    J_slice4,
+    true_CI4,
+    true_phi4,
+    n_vals_jax
+)
+
+hcr4 = jnp.array(h_true4[:, 1])
+hpl4 = jnp.array(h_true4[:, 0])
+
+#FFT Time
+window = get_window("hann", N)
+window_jax = jnp.asarray(window)
+W = jnp.sum(window_jax**2) / N
+norm = jnp.sqrt(W)
+
+@jax.jit
+def compute_fft(signal, window, dt, W):
+    windowed = signal * window
+    return dt * jnp.fft.rfft(windowed) / jnp.sqrt(W)
+
+X1 = compute_fft(jnp.asarray(hcr1), window_jax, dt, W)
+Y1 = compute_fft(jnp.asarray(hpl1), window_jax, dt, W)
+
+X2 = compute_fft(jnp.asarray(hcr2), window_jax, dt, W)
+Y2 = compute_fft(jnp.asarray(hpl2), window_jax, dt, W)
+
+X3 = compute_fft(jnp.asarray(hcr3), window_jax, dt, W)
+Y3 = compute_fft(jnp.asarray(hpl3), window_jax, dt, W)
+
+X4 = compute_fft(jnp.asarray(hcr4), window_jax, dt, W)
+Y4 = compute_fft(jnp.asarray(hpl4), window_jax, dt, W)
+
+#LISA Noise Curve
+
+f1 = 4e-4
+f2 = 2.5e-2
+
+def SI(f):
+    return 5.76e-48 * (1 + (f1/f)**2)
+
+def SII(f):
+    return 3.6e-41
+
+def R(f):
+    return 1 + (f/f2)**2
+
+def Sh(f):
+    return 10/3 * (SI(f)/((2*np.pi*f)**4) + SII(f)) * R(f)
+
+Agal = 3.266e-44
+alpha = 1.183
+s1 = 1.426e-3
+f0 = 2.412e-3
+s2 = 4.835e-3
+
+def Sgal(f):
+    return Agal * f**(-7/3) * np.exp(-(f/s1)**alpha) * (1/2) * (1 +np.tanh((f0 - f)/s2))
+
+# Frequency axis (properly scaled)
+λ = np.fft.rfftfreq(N+1, d=dt)
+
+#The noise added to INDIVIDUAL REAL/IMAGINARY PARTS (hence we divide by 4 rather than 2)
+f = λ[1:]
+LISAnoisePSD = Sh(f) + Sgal(f)
+
+characstrainX1 = abs(X1)[1:]*np.sqrt(2*f/(N*dt))
+characstrainY1 = abs(Y1)[1:]*np.sqrt(2*f/(N*dt))
+responsecharacstrain1 = np.sqrt(0.5)*(characstrainX1**2 + characstrainY1**2)**0.5
+
+characstrainX2 = abs(X2)[1:]*np.sqrt(2*f/(N*dt))
+characstrainY2 = abs(Y2)[1:]*np.sqrt(2*f/(N*dt))
+responsecharacstrain2 = np.sqrt(0.5)*(characstrainX2**2 + characstrainY2**2)**0.5
+
+characstrainX3 = abs(X3)[1:]*np.sqrt(2*f/(N*dt))
+characstrainY3 = abs(Y3)[1:]*np.sqrt(2*f/(N*dt))
+responsecharacstrain3 = np.sqrt(0.5)*(characstrainX3**2 + characstrainY3**2)**0.5
+
+characstrainX4 = abs(X4)[1:]*np.sqrt(2*f/(N*dt))
+characstrainY4 = abs(Y4)[1:]*np.sqrt(2*f/(N*dt))
+responsecharacstrain4 = np.sqrt(0.5)*(characstrainX4**2 + characstrainY4**2)**0.5
+
+fnoisecurve1 = np.sqrt(f*LISAnoisePSD)
+fnoisecurve2 = np.sqrt(f*Sgal(f))
+fnoisecurve3 = np.sqrt(f*Sh(f))
+
+plt.figure(figsize=(8,5))
+plt.plot(np.log10(f), np.log10(responsecharacstrain1), label='Response for V803Cen', color='blue')
+plt.plot(np.log10(f), np.log10(responsecharacstrain2), label='Response for HMCancri', color='red')
+plt.plot(np.log10(f), np.log10(responsecharacstrain3), label='Response for ZTFJ1539', color='purple')
+plt.plot(np.log10(f), np.log10(responsecharacstrain4), label='Response for AMCVn', color='brown')
+plt.plot(np.log10(f), np.log10(np.sqrt(0.5)*np.sqrt(6)*fnoisecurve1), label='Kupfer et al Total Noise Curve', color='orange')
+plt.plot(np.log10(f), np.log10(np.sqrt(0.5)*np.sqrt(6)*fnoisecurve2), label='Kupfer et al Galactic Foreground Only', color='green')
+plt.plot(np.log10(f), np.log10(np.sqrt(0.5)*np.sqrt(6)*fnoisecurve3), label='Kupfer et al Instrumental Noise Only', color='black')
+plt.legend(loc='lower left')
+plt.xlabel("log10(Frequency (Hz))", fontsize=15)
+plt.ylabel("log10(Characteristic Strain)", fontsize=15)
+plt.title("Characteristic Strain for HM Cancri and Noise")
+plt.grid(True)                     # major grid
+plt.minorticks_on()               # enable minor ticks
+plt.grid(which='minor', linestyle=':', alpha=0.4)   # minor grid
+plt.tight_layout()
+plt.xlim(np.log10(3e-4), -2)
+plt.ylim(-21, -18)
+plt.show()
