@@ -12,23 +12,6 @@ import shutil
 csi = 3e8
 L = 2.5e9
 
-def omegaL(f):
-    return 2*np.pi*f*L/csi
-
-def sacc(f): #given by equation 13
-    return (3e-15/(2*np.pi*f*csi))**2 * (1+(0.4e-3/f)**2)*(1+(f/(8e-3))**4)
-
-def soms(f): #given by equation 10
-    return (15e-12)**2 * (2*np.pi*f/csi)**2 * (1+(2e-3/f)**4)
-
-def SnX20(f): #given by equation 20
-    omegal = omegaL(f)
-    return 64*(np.sin(omegal))**2 * (np.sin(2*omegal))**2 * (soms(f)+(3+np.cos(2*omegal))*sacc(f))
-
-def ShX20(f): #given by equation 57
-    omegal = omegaL(f)
-    return (20/3) * (1+0.6*(omegal)**2) * (SnX20(f))/(((4*omegal)**2)*((np.sin(omegal))**2)*(2*np.sin(2*omegal))**2)
-
 @jax.jit
 def Fplus(theta,phi,psi):
     return jnp.sqrt(3)/2 * (0.5*(1+jnp.cos(theta)**2)*jnp.cos(2*phi)*jnp.cos(2*psi) - jnp.cos(theta)*jnp.sin(2*phi)*jnp.sin(2*psi))
@@ -47,7 +30,7 @@ def _safe_rmtree(path, *args, **kwargs):
 
 shutil.rmtree = _safe_rmtree
 
-jax.config.update("jax_enable_x64", False)
+jax.config.update("jax_enable_x64", True)
 
 # ============================================================
 # 1. Time grid
@@ -61,8 +44,7 @@ bilby.utils.check_directory_exists_and_if_not_mkdir(outdir)
 
 N = 10000
 dt = 10
-t = np.arange(N) * dt
-t_jax = jnp.asarray(t)
+t = jnp.arange(N) * dt
 
 # ============================================================
 # 2. True signal parameters
@@ -74,11 +56,11 @@ psi = 0
 
 true_f0 = 0.00311
 ω = 2 * true_f0 * np.pi
-true_e = 0.1
+true_e = 0.2
 m1 = 0.5 * 2e30
 m2 = 0.5 * 2e30
 r = 1.5e19
-true_CI = np.cos(np.pi/4)
+true_CI = 0
 
 G = 6.67e-11
 c = 3e8
@@ -88,11 +70,12 @@ mu = (m1 * m2) / (m1 + m2)
 prefactor = ω**2 * a0**2 * (mu * G) / (r * c**4)
 
 true_A = prefactor
-true_peri = np.pi
+true_peri = np.pi/4
+
+true_R = 2 * true_A * (1 + true_CI**2)
 
 nmax = 10
-n_vals = np.arange(1, nmax + 1)
-n_vals_jax = jnp.asarray(n_vals)
+n_vals = jnp.arange(1, nmax + 1)
 
 e_min, e_max, de = 0, 1, 0.001
 e_grid = np.arange(e_min, e_max + de/2, de)
@@ -164,17 +147,30 @@ def gw_time_domain_jax(t, A, f0, e, J_slice, CI, peri, n_vals):
 
     return pref * jnp.sum(hp, axis=1)
 
-J_slice = get_J_slice_interp_jax(true_e)
+J_slice_true = get_J_slice_interp_jax(true_e)
+
+@jax.jit
+def g(n_vals,e,J_slice):
+    Jm2 = J_slice[:, 0]
+    Jm1 = J_slice[:, 1]
+    Jp1 = J_slice[:, 2]
+    Jp2 = J_slice[:, 3]
+    
+    A_term = (1/n_vals) * (Jm2 - Jp2 - 2.0 * e * (Jm1 - Jp1))
+    B_term = (1/n_vals) * (1.0 - e * e) * (Jp2 - Jm2)
+    C_term = (1/n_vals) * jnp.sqrt(1.0 - e * e) * (Jp2 + Jm2 - e * (Jp1 + Jm1))
+
+    return n_vals**6/24 * (A_term**2 + B_term**2 + 3*C_term**2 - A_term*B_term)
 
 h_true = gw_time_domain_jax(
-    t_jax,
+    t,
     true_A,
     true_f0,
     true_e,
-    J_slice,
+    J_slice_true,
     true_CI,
     true_peri,
-    n_vals_jax
+    n_vals
 )
 
 response_true = h_true
@@ -189,22 +185,27 @@ freqs = np.fft.rfftfreq(N, d=dt)
 csi = 3e8
 L = 2.5e9
 
+@jax.jit
 def omegaL(f):
-    return 2*np.pi*f*L/csi
+    return 2*jnp.pi*f*L/csi
 
-def sacc(f): #given by equation 13
-    return (3e-15/(2*np.pi*f*csi))**2 * (1+(0.4e-3/f)**2)*(1+(f/(8e-3))**4)
+@jax.jit
+def sacc(f):
+    return (3e-15/(2*jnp.pi*f*csi))**2 * (1+(0.4e-3/f)**2)*(1+(f/(8e-3))**4)
 
-def soms(f): #given by equation 10
-    return (15e-12)**2 * (2*np.pi*f/csi)**2 * (1+(2e-3/f)**4)
+@jax.jit
+def soms(f):
+    return (15e-12)**2 * (2*jnp.pi*f/csi)**2 * (1+(2e-3/f)**4)
 
-def SnX20(f): #given by equation 20
+@jax.jit
+def SnX20(f):
     omegal = omegaL(f)
-    return 64*(np.sin(omegal))**2 * (np.sin(2*omegal))**2 * (soms(f)+(3+np.cos(2*omegal))*sacc(f))
+    return 64*(jnp.sin(omegal))**2 * (jnp.sin(2*omegal))**2 * (soms(f)+(3+jnp.cos(2*omegal))*sacc(f))
 
-def ShX20(f): #given by equation 57
+@jax.jit
+def ShX20(f):
     omegal = omegaL(f)
-    return (20/3) * (1+0.6*(omegal)**2) * (SnX20(f))/(((4*omegal)**2)*((np.sin(omegal))**2)*(2*np.sin(2*omegal))**2)
+    return (20/3) * (1+0.6*(omegal)**2) * (SnX20(f))/(((4*omegal)**2)*((jnp.sin(omegal))**2)*(2*jnp.sin(2*omegal))**2)
 
 @jax.jit
 def Fplus(theta,phi,psi):
@@ -220,12 +221,30 @@ b[1:] = np.sqrt(ShX20(freqs[1:]) * N * dt / 4)
 noise_fft = jnp.asarray(np.random.normal(0, b) + 1j * np.random.normal(0, b))
 data_fft = h_fft_true + noise_fft
 
+omega = 2.0 * jnp.pi * true_f0
+phase = omega * t[:, None] * n_vals[None, :]
+harmonics = true_R*(jnp.sqrt(g(n_vals,true_e,J_slice_true))/n_vals)[None,:]*jnp.sin(phase)
+h_td2 = jnp.sum(harmonics, axis=1)
+h_fft2 = dt * jnp.fft.rfft(h_td2 * window_jax) / norm
+
 # ============================================================
 # 4. Plotting
 # ============================================================
 
 plt.figure(figsize=(10, 6))
-plt.plot(t_jax, np.array(response_true), label='GW Signal', color='blue')
+plt.plot(t[1000:], np.array(response_true)[1000:], label='GW Signal', color='blue')
+plt.plot(t[1000:], np.ones(N)[1000:]*true_R, label='True Amplitude', color='red', linestyle='--')
+plt.xlabel('Time (s)')
+plt.ylabel('Strain')
+plt.title('Time-Domain GW Signal')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(10, 6))
+plt.plot(t[1000:], np.array(h_td2)[1000:], label='GW Signal', color='blue')
+plt.plot(t[1000:], np.ones(N)[1000:]*true_R, label='True Amplitude', color='red', linestyle='--')
 plt.xlabel('Time (s)')
 plt.ylabel('Strain')
 plt.title('Time-Domain GW Signal')
@@ -244,22 +263,29 @@ plt.grid(True)
 plt.tight_layout()
 plt.show()
 
+plt.figure(figsize=(10, 6))
+plt.plot(freqs[200:], jnp.abs(h_fft_true[200:]), label='True FFT', color='blue')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Amplitude')
+plt.title('FFT of GW Signal with Noise')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(10, 6))
+plt.plot(freqs[200:], jnp.abs(h_fft2[200:]), label='True FFT 2', color='red')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Amplitude')
+plt.title('FFT of GW Signal with Noise')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
 # ============================================================
 # 5. Likelihood (allocation-free)
 # ============================================================
-
-@jax.jit
-def g(n_vals_jax,e,J_slice):
-    Jm2 = J_slice[:, 0]
-    Jm1 = J_slice[:, 1]
-    Jp1 = J_slice[:, 2]
-    Jp2 = J_slice[:, 3]
-    
-    A_term = (1/n_vals_jax) * (Jm2 - Jp2 - 2.0 * e * (Jm1 - Jp1))
-    B_term = (1/n_vals_jax) * (1.0 - e * e) * (Jp2 - Jm2)
-    C_term = (1/n_vals_jax) * jnp.sqrt(1.0 - e * e) * (Jp2 + Jm2 - e * (Jp1 + Jm1))
-
-    return n_vals_jax**6/96 * (A_term**2 + B_term**2 + 3*C_term**2 - A_term*B_term)
 
 
 noise_magnitude = b
@@ -272,6 +298,7 @@ noise_slice = jnp.take(noise_magnitude, freq_indices_jax)
 noise2 = noise_slice * noise_slice
 log_norm = jnp.sum(jnp.log(2 * jnp.pi * noise2))
 
+@jax.jit
 def log_likelihood_fn(R, f0, e, phi1, phi2, phi3, t, data_fft, dt,
                       window_jax, norm, noise2, freq_indices, n_vals_restr):
     
@@ -294,7 +321,7 @@ def log_likelihood_fn(R, f0, e, phi1, phi2, phi3, t, data_fft, dt,
 log_likelihood_jit = jax.jit(
     partial(
         log_likelihood_fn,
-        t=t_jax,
+        t=t,
         data_fft=data_fft,
         dt=dt,
         window_jax=window_jax,
