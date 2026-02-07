@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from functools import partial
 import bilby.core.sampler.base_sampler as bs
 import shutil
+import os
 
 csi = 3e8
 L = 2.5e9
@@ -47,7 +48,7 @@ def _safe_rmtree(path, *args, **kwargs):
 
 shutil.rmtree = _safe_rmtree
 
-jax.config.update("jax_enable_x64", False)
+jax.config.update("jax_enable_x64", True)
 
 # ============================================================
 # 1. Time grid
@@ -56,13 +57,12 @@ jax.config.update("jax_enable_x64", False)
 np.random.seed(123)
   
 label = "freq_peak_with_noise"
-outdir = "outdir"
+outdir = "LISAEccentricModel2"
 bilby.utils.check_directory_exists_and_if_not_mkdir(outdir)
 
-N = 10000
+N = 1000
 dt = 10
-t = np.arange(N) * dt
-t_jax = jnp.asarray(t)
+t = jnp.arange(N) * dt
 
 # ============================================================
 # 2. True signal parameters
@@ -74,7 +74,7 @@ psi = 0
 
 true_f0 = 0.00311
 ω = 2 * true_f0 * np.pi
-true_e = 0.3
+true_e = 0.4
 m1 = 0.5 * 2e30
 m2 = 0.5 * 2e30
 r = 1.5e19
@@ -91,8 +91,7 @@ true_A = prefactor
 true_peri = np.pi
 
 nmax = 10
-n_vals = np.arange(1, nmax + 1)
-n_vals_jax = jnp.asarray(n_vals)
+n_vals = jnp.arange(1, nmax + 1)
 
 e_min, e_max, de = 0, 1, 0.001
 e_grid = np.arange(e_min, e_max + de/2, de)
@@ -157,24 +156,19 @@ def gw_time_domain_jax(t, A, f0, e, J_slice, CI, peri, n_vals):
         - nCn[None, :] * C_term * jnp.sin(phase)
     )
 
-    hc = (
-    2.0 * jnp.sin(phase) * C2peri * CI * nCn
-    + (nAn - nBn) * jnp.cos(phase) * S2peri * CI
-    )
-
     return pref * jnp.sum(hp, axis=1)
 
 J_slice = get_J_slice_interp_jax(true_e)
 
 h_true = gw_time_domain_jax(
-    t_jax,
+    t,
     true_A,
     true_f0,
     true_e,
     J_slice,
     true_CI,
     true_peri,
-    n_vals_jax
+    n_vals
 )
 
 response_true = h_true
@@ -189,22 +183,27 @@ freqs = np.fft.rfftfreq(N, d=dt)
 csi = 3e8
 L = 2.5e9
 
+@jax.jit
 def omegaL(f):
-    return 2*np.pi*f*L/csi
+    return 2*jnp.pi*f*L/csi
 
-def sacc(f): #given by equation 13
-    return (3e-15/(2*np.pi*f*csi))**2 * (1+(0.4e-3/f)**2)*(1+(f/(8e-3))**4)
+@jax.jit
+def Sacc(f):
+    return (3e-15/(2*jnp.pi*f*csi))**2 * (1+(0.4e-3/f)**2)*(1+(f/(8e-3))**4)
 
-def soms(f): #given by equation 10
-    return (15e-12)**2 * (2*np.pi*f/csi)**2 * (1+(2e-3/f)**4)
+@jax.jit
+def Soms(f):
+    return (15e-12)**2 * (2*jnp.pi*f/csi)**2 * (1+(2e-3/f)**4)
 
-def SnX20(f): #given by equation 20
+@jax.jit
+def SnX20(f):
     omegal = omegaL(f)
-    return 64*(np.sin(omegal))**2 * (np.sin(2*omegal))**2 * (soms(f)+(3+np.cos(2*omegal))*sacc(f))
+    return 64*(jnp.sin(omegal))**2 * (jnp.sin(2*omegal))**2 * (Soms(f)+(3+jnp.cos(2*omegal))*Sacc(f))
 
-def ShX20(f): #given by equation 57
+@jax.jit
+def ShX20(f):
     omegal = omegaL(f)
-    return (20/3) * (1+0.6*(omegal)**2) * (SnX20(f))/(((4*omegal)**2)*((np.sin(omegal))**2)*(2*np.sin(2*omegal))**2)
+    return (20/3) * (1+0.6*(omegal)**2) * (SnX20(f))/(((4*omegal)**2)*((jnp.sin(omegal))**2)*(2*jnp.sin(2*omegal))**2)
 
 @jax.jit
 def Fplus(theta,phi,psi):
@@ -214,8 +213,8 @@ def Fplus(theta,phi,psi):
 def Fcross(theta,phi,psi):
     return jnp.sqrt(3)/2 * (0.5*(1+jnp.cos(theta)**2)*jnp.cos(2*phi)*jnp.sin(2*psi) + jnp.cos(theta)*jnp.sin(2*phi)*jnp.cos(2*psi))
 
-b = np.zeros(len(freqs))
-b[1:] = np.sqrt(ShX20(freqs[1:]) * N * dt / 4)
+b = jnp.zeros(len(freqs))
+b = b.at[1:].set(0.1*jnp.sqrt(ShX20(freqs[1:]) * N * dt / 4))
 
 noise_fft = jnp.asarray(np.random.normal(0, b) + 1j * np.random.normal(0, b))
 data_fft = h_fft_true + noise_fft
@@ -225,7 +224,7 @@ data_fft = h_fft_true + noise_fft
 # ============================================================
 
 plt.figure(figsize=(10, 6))
-plt.plot(t_jax, np.array(response_true), label='GW Signal', color='blue')
+plt.plot(t, np.array(response_true), label='GW Signal', color='blue')
 plt.xlabel('Time (s)')
 plt.ylabel('Strain')
 plt.title('Time-Domain GW Signal')
@@ -235,7 +234,7 @@ plt.tight_layout()
 plt.show()
 
 plt.figure(figsize=(10, 6))
-plt.plot(freqs[200:], jnp.abs(data_fft[200:]), label='Data FFT', color='green')
+plt.plot(freqs[20:], jnp.abs(data_fft[20:]), label='Data FFT', color='green')
 plt.xlabel('Frequency (Hz)')
 plt.ylabel('Amplitude')
 plt.title('FFT of GW Signal with Noise')
@@ -250,14 +249,14 @@ plt.show()
 
 noise_magnitude = b
 
-freq_mask = (freqs > 0.005) & (freqs < 0.01)
-freq_indices = np.where(freq_mask)[0]
-freq_indices_jax = jnp.asarray(freq_indices)
+freq_mask = (freqs > 0.005) & (freqs < 0.02)
+freq_indices = jnp.where(freq_mask)[0]
 
-noise_slice = jnp.take(noise_magnitude, freq_indices_jax)
+noise_slice = jnp.take(noise_magnitude, freq_indices)
 noise2 = noise_slice * noise_slice
 log_norm = jnp.sum(jnp.log(2 * jnp.pi * noise2))
 
+@jax.jit
 def log_likelihood_fn(A, B, C, f0, e, phi0, t, data_fft, dt,
                       window_jax, norm, noise2, freq_indices, n_vals):
     
@@ -289,14 +288,14 @@ def log_likelihood_fn(A, B, C, f0, e, phi0, t, data_fft, dt,
 log_likelihood_jit = jax.jit(
     partial(
         log_likelihood_fn,
-        t=t_jax,
+        t=t,
         data_fft=data_fft,
         dt=dt,
         window_jax=window_jax,
         norm=norm,
         noise2=noise2,
-        freq_indices=freq_indices_jax,
-        n_vals=n_vals_jax
+        freq_indices=freq_indices,
+        n_vals=n_vals
     )
 )
 
@@ -322,12 +321,12 @@ class FFTGWLikelihood(bilby.Likelihood):
 
 from bilby.core.prior import PriorDict, Uniform, Constraint
 priors = PriorDict()
-priors["A"] = Uniform(0, 2e-21, name="A", latex_label=r"$R$")
-priors["B"] = Uniform(0, 2e-21, name="B", latex_label=r"$R$")
-priors["C"] = Uniform(0, 2e-21, name="C", latex_label=r"$R$")
+priors["A"] = Uniform(-(1e-21), 1e-21, name="A", latex_label=r"$A$")
+priors["B"] = Uniform(-(1e-21), 1e-21, name="B", latex_label=r"$B$")
+priors["C"] = Uniform(-(1e-21), 1e-21, name="C", latex_label=r"$C$")
 priors["f0"] = Uniform(0.003, 0.005, name="f_0", latex_label=r"$f_0\ \mathrm{[Hz]}$")
 priors["e"] = Uniform(0, 0.5, name="e", latex_label=r"e")
-priors["phi0"] = Uniform(0, 2*np.pi, name="phi0", latex_label=r"\phi0")
+priors["phi0"] = Uniform(0, np.pi, name="phi0", latex_label=r"\phi0")
 
 # ============================================================
 # 9. Run bilby
@@ -335,16 +334,31 @@ priors["phi0"] = Uniform(0, 2*np.pi, name="phi0", latex_label=r"\phi0")
 
 likelihood = FFTGWLikelihood(t, data_fft, dt)
 
+param_order = ["A", "B", "C", "f0", "e", "phi0"]
+
+truths_dict = dict(
+    A=true_A*(jnp.cos(true_peri)**2 - jnp.sin(true_peri)**2 * true_CI**2),
+    B=true_A*(jnp.sin(true_peri)**2 - jnp.cos(true_peri)**2 * true_CI**2),
+    C=true_A*jnp.sin(2*true_peri)*(1 + true_CI**2),
+    f0=true_f0,
+    e=true_e,
+    phi0=true_peri
+)
+
+truths_list = [truths_dict[p] for p in param_order]
+print(truths_list)
+
 result = bilby.run_sampler(
     likelihood=likelihood,
     priors=priors,
-    sampler="ultranest",
+    sampler="dynesty",
 
-    outdir="outdir",
+    outdir="LISAEccentricModel2",
     label="fft_gw_freq_noise",
 
-    overwrite=False,                 
+    overwrite=True,                 
     use_temporary_directory=False, 
+    save=True,
 
     clean=False,
     sampler_kwargs=dict(
@@ -356,11 +370,58 @@ result = bilby.run_sampler(
 
 param_order = ["A", "B", "C", "f0", "e", "phi0"]
 
+truths_dict = dict(
+    A=true_A*(jnp.cos(true_peri)**2 - jnp.sin(true_peri)**2 * true_CI**2),
+    B=true_A*(jnp.sin(true_peri)**2 - jnp.cos(true_peri)**2 * true_CI**2),
+    C=true_A*jnp.sin(2*true_peri)*(1 + true_CI**2),
+    f0=true_f0,
+    e=true_e,
+    phi0=true_peri
+)
+
+truths_list = [truths_dict[p] for p in param_order]
+print(truths_list)
+
+ranges_dict = dict(
+    A=(-1e-21, 1e-21),
+    B=(-1e-21, 1e-21),
+    C=(-1e-21, 1e-21),
+    f0=(0.003, 0.0032),
+    e=(0.38, 0.42),
+    phi0=(0, np.pi)
+)
+
+ranges_list = [ranges_dict[p] for p in param_order]
+
 result.plot_corner(
     parameters=param_order,
     bins=40,
     smooth=1.0,
     quantiles=[0.16, 0.84],
+    truths=truths_list,
+    ranges=ranges_list
 )
+
 plt.show()
 result.save_to_file()
+
+result = bilby.result.read_in_result(filename=f"{outdir}/fft_gw_freq_noise_result.json")
+
+param_order = ["A", "B", "C", "f0", "e", "phi0"]
+
+print(result.posterior[param_order].describe())
+
+import corner
+
+fig = corner.corner(
+    result.posterior[param_order],
+    labels=[r"$A$", r"$B$", r"$C$", r"$f_0$", r"$e$", r"$\phi_0$"],
+    truths=truths_list,
+    range=ranges_list,
+    quantiles=[0.16, 0.5, 0.84],
+    show_titles=True
+)
+fig.savefig(f"{outdir}/corner_custom_new.png", dpi=300, bbox_inches='tight')
+plt.show()
+
+print(os.listdir("LISAEccentricModel2"))
