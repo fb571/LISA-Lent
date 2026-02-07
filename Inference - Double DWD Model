@@ -12,30 +12,13 @@ import shutil
 csi = 3e8
 L = 2.5e9
 
-def omegaL(f):
-    return 2*np.pi*f*L/csi
-
-def sacc(f): #given by equation 13
-    return (3e-15/(2*np.pi*f*csi))**2 * (1+(0.4e-3/f)**2)*(1+(f/(8e-3))**4)
-
-def soms(f): #given by equation 10
-    return (15e-12)**2 * (2*np.pi*f/csi)**2 * (1+(2e-3/f)**4)
-
-def SnX20(f): #given by equation 20
-    omegal = omegaL(f)
-    return 64*(np.sin(omegal))**2 * (np.sin(2*omegal))**2 * (soms(f)+(3+np.cos(2*omegal))*sacc(f))
-
-def ShX20(f): #given by equation 57
-    omegal = omegaL(f)
-    return (20/3) * (1+0.6*(omegal)**2) * (SnX20(f))/(((4*omegal)**2)*((np.sin(omegal))**2)*(2*np.sin(2*omegal))**2)
-
 @jax.jit
 def Fplus(theta,phi,psi):
     return jnp.sqrt(3)/2 * (0.5*(1+jnp.cos(theta)**2)*jnp.cos(2*phi)*jnp.cos(2*psi) - jnp.cos(theta)*jnp.sin(2*phi)*jnp.sin(2*psi))
 
 @jax.jit
 def Fcross(theta,phi,psi):
-    return np.sqrt(3)/2 * (0.5*(1+jnp.cos(theta)**2)*jnp.cos(2*phi)*jnp.sin(2*psi) + jnp.cos(theta)*jnp.sin(2*phi)*jnp.cos(2*psi))
+    return jnp.sqrt(3)/2 * (0.5*(1+jnp.cos(theta)**2)*jnp.cos(2*phi)*jnp.sin(2*psi) + jnp.cos(theta)*jnp.sin(2*phi)*jnp.cos(2*psi))
 
 _real_rmtree = shutil.rmtree
 
@@ -47,7 +30,7 @@ def _safe_rmtree(path, *args, **kwargs):
 
 shutil.rmtree = _safe_rmtree
 
-jax.config.update("jax_enable_x64", False)
+jax.config.update("jax_enable_x64", True)
 
 # ============================================================
 # 1. Time grid
@@ -61,8 +44,7 @@ bilby.utils.check_directory_exists_and_if_not_mkdir(outdir)
 
 N = 10000
 dt = 10
-t = np.arange(N) * dt
-t_jax = jnp.asarray(t)
+t = jnp.arange(N) * dt
 
 # ============================================================
 # 2. True signal parameters
@@ -106,13 +88,13 @@ def gw_circular_time_domain_jax(t, A, f0, CI, peri):
     return pref * hp
 
 h_true = gw_circular_time_domain_jax(
-    t_jax,
+    t,
     true_A,
     true_f0,
     true_CI,
     true_peri,
 ) + gw_circular_time_domain_jax(
-    t_jax,
+    t,
     0.3*true_A,
     1.5*true_f0,
     true_CI,
@@ -122,14 +104,44 @@ h_true = gw_circular_time_domain_jax(
 response = h_true
 window = get_window("hann", N)
 window_jax = jnp.asarray(window)
-W = np.sum(window**2) / N
-norm = np.sqrt(W)
+W = jnp.sum(window**2) / N
+norm = jnp.sqrt(W)
 
 h_fft = dt * jnp.fft.rfft(response * window_jax) / norm
-freqs = np.fft.rfftfreq(N, d=dt)
+freqs = jnp.fft.rfftfreq(N, d=dt)
 
-b = np.zeros(len(freqs))
-b[1:] = np.sqrt(ShX20(freqs[1:]) * N * dt / 4)
+@jax.jit
+def omegaL(f):
+    return 2*jnp.pi*f*L/csi
+
+@jax.jit
+def Sacc(f):
+    return (3e-15/(2*jnp.pi*f*csi))**2 * (1+(0.4e-3/f)**2)*(1+(f/(8e-3))**4)
+
+@jax.jit
+def Soms(f):
+    return (15e-12)**2 * (2*jnp.pi*f/csi)**2 * (1+(2e-3/f)**4)
+
+@jax.jit
+def SnX20(f):
+    omegal = omegaL(f)
+    return 64*(jnp.sin(omegal))**2 * (jnp.sin(2*omegal))**2 * (Soms(f)+(3+jnp.cos(2*omegal))*Sacc(f))
+
+@jax.jit
+def ShX20(f):
+    omegal = omegaL(f)
+    return (20/3) * (1+0.6*(omegal)**2) * (SnX20(f))/(((4*omegal)**2)*((jnp.sin(omegal))**2)*(2*jnp.sin(2*omegal))**2)
+
+@jax.jit
+def Fplus(theta,phi,psi):
+    return jnp.sqrt(3)/2 * (0.5*(1+jnp.cos(theta)**2)*jnp.cos(2*phi)*jnp.cos(2*psi) - jnp.cos(theta)*jnp.sin(2*phi)*jnp.sin(2*psi))
+
+@jax.jit
+def Fcross(theta,phi,psi):
+    return jnp.sqrt(3)/2 * (0.5*(1+jnp.cos(theta)**2)*jnp.cos(2*phi)*jnp.sin(2*psi) + jnp.cos(theta)*jnp.sin(2*phi)*jnp.cos(2*psi))
+
+b = jnp.zeros(len(freqs))
+b = b.at[1:].set(jnp.sqrt(ShX20(freqs[1:]) * N * dt / 4))
 
 noise_fft = jnp.asarray(np.random.normal(0, b) + 1j * np.random.normal(0, b))
 data_fft = h_fft + noise_fft
@@ -141,8 +153,8 @@ true_R = 2*true_A * (1+true_CI**2)
 # ============================================================
 
 plt.figure(figsize=(10, 6))
-plt.plot(t_jax[:1000], np.array(response)[:1000], label='GW Signal', color='blue')
-plt.plot(t_jax[:1000], np.ones(1000)*true_R, label='True Amplitude', color='red', linestyle='--')
+plt.plot(t[:1000], np.array(response)[:1000], label='GW Signal', color='blue')
+plt.plot(t[:1000], np.ones(1000)*true_R, label='True Amplitude', color='red', linestyle='--')
 plt.xlabel('Time (s)')
 plt.ylabel('Strain')
 plt.title('Time-Domain GW Signal')
@@ -175,6 +187,7 @@ noise_slice = jnp.take(noise_magnitude, freq_indices_jax)
 noise2 = noise_slice * noise_slice
 log_norm = jnp.sum(jnp.log(2 * jnp.pi * noise2))
 
+@jax.jit
 def log_likelihood_fn(R1, R2, f01, f02, phi1, phi2, t, data_fft, dt,
                       window_jax, norm, noise2, freq_indices):
     h_td1 = R1*jnp.sin(4*jnp.pi*f01*t - phi1)
@@ -188,7 +201,7 @@ def log_likelihood_fn(R1, R2, f01, f02, phi1, phi2, t, data_fft, dt,
 log_likelihood_jit = jax.jit(
     partial(
         log_likelihood_fn,
-        t=t_jax,
+        t=t,
         data_fft=data_fft,
         dt=dt,
         window_jax=window_jax,
