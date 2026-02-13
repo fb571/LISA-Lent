@@ -315,7 +315,7 @@ priors["R1"] = Uniform(0, 2e-21, name="R1", latex_label=r"$R1$")
 priors["R2"] = Uniform(0, 2e-21, name="R2", latex_label=r"$R2$")
 priors["f01"] = Uniform(0.003, 0.01, name="f_01", latex_label=r"$f_01\ \mathrm{[Hz]}$")
 priors["f02"] = Uniform(0.003, 0.01, name="f_02", latex_label=r"$f_02\ \mathrm{[Hz]}$")
-priors["df0"] = Constraint(minimum=0.0002, maximum=0.002, name="df0", latex_label=r"\Delta f_0\ \mathrm{[Hz]}")
+priors["df0"] = Constraint(minimum=3/(N*dt), maximum=0.002, name="df0", latex_label=r"\Delta f_0\ \mathrm{[Hz]}")
 priors["phi1"] = Uniform(0, 2*np.pi, name="phi1", latex_label=r"\phi_1")
 priors["phi2"] = Uniform(0, 2*np.pi, name="phi2", latex_label=r"\phi_2")
 
