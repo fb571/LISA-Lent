@@ -7,7 +7,6 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 import bilby.core.sampler.base_sampler as bs
-import shutil
 
 np.random.seed(321)
 
@@ -22,16 +21,6 @@ def Fplus(theta,phi,psi):
 def Fcross(theta,phi,psi):
     return jnp.sqrt(3)/2 * (0.5*(1+jnp.cos(theta)**2)*jnp.cos(2*phi)*jnp.sin(2*psi) + jnp.cos(theta)*jnp.sin(2*phi)*jnp.cos(2*psi))
 
-_real_rmtree = shutil.rmtree
-
-def _safe_rmtree(path, *args, **kwargs):
-    try:
-        _real_rmtree(path, *args, **kwargs)
-    except PermissionError:
-        pass
-
-shutil.rmtree = _safe_rmtree
-
 jax.config.update("jax_enable_x64", True)
 
 # ============================================================
@@ -39,7 +28,7 @@ jax.config.update("jax_enable_x64", True)
 # ============================================================
   
 label = "freq_peak_with_noise"
-outdir = "outdir"
+outdir = "LISADoubleFit=0.4"
 bilby.utils.check_directory_exists_and_if_not_mkdir(outdir)
 
 N = 10000
@@ -56,7 +45,7 @@ psi = 0
 
 true_f0 = 0.00311
 ω = 2 * true_f0 * jnp.pi
-true_e = 0.485
+true_e = 0.4
 m1 = 0.5 * 2e30
 m2 = 0.5 * 2e30
 r = 1.5e19
@@ -330,7 +319,7 @@ result = bilby.run_sampler(
     priors=priors,
     sampler="dynesty",
 
-    outdir="outdir",
+    outdir="LISADoubleFit=0.4",
     label="fft_gw_freq_noise",
 
     overwrite=False,                 
@@ -354,3 +343,39 @@ result.plot_corner(
 )
 plt.show()
 result.save_to_file()
+
+posterior = result.posterior
+idx_mle = posterior["log_likelihood"].idxmax()
+mle_parameters = posterior.loc[idx_mle]
+
+R1_mle = mle_parameters["R1"]
+R2_mle = mle_parameters["R2"]
+f01_mle = mle_parameters["f01"]
+f02_mle = mle_parameters["f02"]
+phi1_mle = mle_parameters["phi1"]
+phi2_mle = mle_parameters["phi2"]
+
+h_td1_mle = R1_mle*jnp.sin(4*jnp.pi*f01_mle*t - phi1_mle)
+h_td2_mle = R2_mle*jnp.sin(4*jnp.pi*f02_mle*t - phi2_mle)
+h_td_mle = h_td1_mle + h_td2_mle
+h_fft_mle = dt * jnp.fft.rfft(h_td_mle * window_jax) / norm
+
+plt.figure(figsize=(10, 6))
+plt.plot(freqs[200:], jnp.abs(h_fft_true[200:]), label='Data FFT', color='green')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Amplitude')
+plt.title('FFT of GW Signal with Noise')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(10, 6))
+plt.plot(freqs[200:], jnp.abs(h_fft_mle[200:]), label='Data FFT', color='green')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Amplitude')
+plt.title('FFT of GW Signal of MLE Parameters')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
