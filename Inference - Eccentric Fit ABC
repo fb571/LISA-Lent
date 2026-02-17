@@ -7,8 +7,6 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 import bilby.core.sampler.base_sampler as bs
-import shutil
-import os
 
 csi = 3e8
 L = 2.5e9
@@ -38,16 +36,6 @@ def Fplus(theta,phi,psi):
 def Fcross(theta,phi,psi):
     return jnp.sqrt(3)/2 * (0.5*(1+jnp.cos(theta)**2)*jnp.cos(2*phi)*jnp.sin(2*psi) + jnp.cos(theta)*jnp.sin(2*phi)*jnp.cos(2*psi))
 
-_real_rmtree = shutil.rmtree
-
-def _safe_rmtree(path, *args, **kwargs):
-    try:
-        _real_rmtree(path, *args, **kwargs)
-    except PermissionError:
-        pass
-
-shutil.rmtree = _safe_rmtree
-
 jax.config.update("jax_enable_x64", True)
 
 # ============================================================
@@ -57,10 +45,10 @@ jax.config.update("jax_enable_x64", True)
 np.random.seed(123)
   
 label = "freq_peak_with_noise"
-outdir = "LISAEccentricModel2"
+outdir = "LISAEccentricModel2 (ABC) 2"
 bilby.utils.check_directory_exists_and_if_not_mkdir(outdir)
 
-N = 1000
+N = 10000
 dt = 10
 t = jnp.arange(N) * dt
 
@@ -214,7 +202,7 @@ def Fcross(theta,phi,psi):
     return jnp.sqrt(3)/2 * (0.5*(1+jnp.cos(theta)**2)*jnp.cos(2*phi)*jnp.sin(2*psi) + jnp.cos(theta)*jnp.sin(2*phi)*jnp.cos(2*psi))
 
 b = jnp.zeros(len(freqs))
-b = b.at[1:].set(0.1*jnp.sqrt(ShX20(freqs[1:]) * N * dt / 4))
+b = b.at[1:].set(jnp.sqrt(ShX20(freqs[1:]) * N * dt / 4))
 
 noise_fft = jnp.asarray(np.random.normal(0, b) + 1j * np.random.normal(0, b))
 data_fft = h_fft_true + noise_fft
@@ -240,6 +228,18 @@ plt.ylabel('Amplitude')
 plt.title('FFT of GW Signal with Noise')
 plt.legend()
 plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(10, 6))
+plt.plot(freqs[1:], jnp.abs(h_fft_true[1:]/(jnp.sqrt(2)*b[1:])), label='SNR', color='green')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Amplitude')
+plt.title('SNR of GW Signal with Noise')
+plt.legend()
+plt.minorticks_on()
+plt.grid(True, which='major', linestyle='-', linewidth=0.8, alpha=0.7)
+plt.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.4)
 plt.tight_layout()
 plt.show()
 
@@ -353,12 +353,11 @@ result = bilby.run_sampler(
     priors=priors,
     sampler="dynesty",
 
-    outdir="LISAEccentricModel2",
+    outdir="LISAEccentricModel2 (ABC) 2",
     label="fft_gw_freq_noise",
 
-    overwrite=True,                 
+    overwrite=False,                 
     use_temporary_directory=False, 
-    save=True,
 
     clean=False,
     sampler_kwargs=dict(
@@ -405,23 +404,51 @@ result.plot_corner(
 plt.show()
 result.save_to_file()
 
-result = bilby.result.read_in_result(filename=f"{outdir}/fft_gw_freq_noise_result.json")
-
 param_order = ["A", "B", "C", "f0", "e", "phi0"]
 
-print(result.posterior[param_order].describe())
-
-import corner
-
-fig = corner.corner(
-    result.posterior[param_order],
-    labels=[r"$A$", r"$B$", r"$C$", r"$f_0$", r"$e$", r"$\phi_0$"],
-    truths=truths_list,
-    range=ranges_list,
-    quantiles=[0.16, 0.5, 0.84],
-    show_titles=True
-)
-fig.savefig(f"{outdir}/corner_custom_new.png", dpi=300, bbox_inches='tight')
 plt.show()
 
-print(os.listdir("LISAEccentricModel2"))
+posterior = result.posterior
+idx_mle = posterior["log_likelihood"].idxmax()
+mle_parameters = posterior.loc[idx_mle]
+
+A_mle = mle_parameters["A"]
+B_mle = mle_parameters["B"]
+C_mle = mle_parameters["C"]
+f0_mle = mle_parameters["f0"]
+e_mle = mle_parameters["e"]
+phi0_mle = mle_parameters["phi0"]
+J_slice_mle = get_J_slice_interp_jax(e_mle)
+
+h_td_mle = gw_time_domain_jax(
+    t,
+    A_mle,
+    f0_mle,
+    e_mle,
+    J_slice_mle,
+    true_CI,
+    phi0_mle,
+    n_vals
+)
+
+h_fft_mle = dt * jnp.fft.rfft(h_td_mle * window_jax) / norm
+
+plt.figure(figsize=(10, 6))
+plt.plot(freqs[200:], jnp.abs(h_fft_true[200:]), label='Data FFT', color='green')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Amplitude')
+plt.title('FFT of GW Signal with Noise')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(10, 6))
+plt.plot(freqs[200:], jnp.abs(h_fft_mle[200:]), label='Data FFT', color='green')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Amplitude')
+plt.title('FFT of GW Signal of MLE Parameters')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
